@@ -131,6 +131,36 @@ def terminate_instance(ctx, instance_id: str):
         console.print(f"[red]Error terminating instance: {e}[/red]")
 
 
+@instances.command("terminate-by-name")
+@click.argument("instance_name")
+@click.pass_context
+def terminate_instance_by_name(ctx, instance_name: str):
+    """Terminate instance by name instead of ID."""
+    api = ctx.obj['api']
+    
+    try:
+        # Find instance by name
+        instances = api.list_instances()
+        matching = [inst for inst in instances if inst.get("name") == instance_name]
+        
+        if not matching:
+            console.print(f"[yellow]No instance found with name '{instance_name}'[/yellow]")
+            return
+        
+        if len(matching) > 1:
+            console.print(f"[red]Multiple instances found with name '{instance_name}'. Use terminate with ID instead.[/red]")
+            for inst in matching:
+                console.print(f"  ID: {inst.get('id', 'unknown')}")
+            return
+        
+        instance_id = matching[0].get("id")
+        result = api.terminate_instance(instance_id)
+        console.print(f"[green]Instance '{instance_name}' (ID: {instance_id}) termination initiated[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error terminating instance by name: {e}[/red]")
+
+
 @instances.command("terminate-all")
 @click.confirmation_option(prompt="Are you sure you want to terminate ALL instances?")
 @click.pass_context
@@ -147,6 +177,67 @@ def terminate_all_instances(ctx):
         
     except Exception as e:
         console.print(f"[red]Error terminating instances: {e}[/red]")
+
+
+@instances.command("ensure")
+@click.option("--type", "-t", required=True, help="Instance type")
+@click.option("--region", "-r", required=True, help="Region")
+@click.option("--name", "-n", required=True, help="Instance name (required for ensure)")
+@click.option("--filesystem", "-f", help="Filesystem to attach")
+@click.pass_context
+def ensure_instance(ctx, type: str, region: str, name: str, filesystem: Optional[str]):
+    """Create instance if it doesn't exist, otherwise do nothing."""
+    api = ctx.obj['api']
+    config = ctx.obj['config']
+    
+    try:
+        # Check if instance with this name already exists
+        instances = api.list_instances()
+        existing = [inst for inst in instances if inst.get("name") == name]
+        
+        if existing:
+            instance = existing[0]
+            console.print(f"[green]Instance '{name}' already exists (ID: {instance.get('id', 'unknown')})[/green]")
+            return
+        
+        # Instance doesn't exist, create it
+        console.print(f"[yellow]Instance '{name}' not found, creating...[/yellow]")
+        
+        ssh_keys = api.list_ssh_keys()
+        if not ssh_keys:
+            console.print("[yellow]No SSH keys found. Setting up SSH key...[/yellow]")
+            public_key = config.get_ssh_public_key()
+            if not public_key:
+                console.print("[red]No SSH public key found in {config.ssh_dir}[/red]")
+                return
+            
+            api.add_ssh_key("default", public_key)
+            ssh_key_names = ["default"]
+        else:
+            ssh_key_names = [key["name"] for key in ssh_keys]
+        
+        filesystem_names = []
+        if filesystem:
+            filesystem_names = [filesystem]
+        elif config.default_filesystem:
+            filesystems = api.list_filesystems()
+            available_fs = [fs["name"] for fs in filesystems if fs["name"] == config.default_filesystem]
+            if available_fs:
+                filesystem_names = [config.default_filesystem]
+                console.print(f"[green]Using default filesystem: {config.default_filesystem}[/green]")
+        
+        result = api.launch_instance(
+            instance_type=type,
+            region=region,
+            ssh_key_names=ssh_key_names,
+            filesystem_names=filesystem_names if filesystem_names else None,
+            name=name
+        )
+        
+        console.print(f"[green]Instance '{name}' created: {result.get('instance_ids', [])}[/green]")
+        
+    except Exception as e:
+        console.print(f"[red]Error ensuring instance: {e}[/red]")
 
 
 @cli.group()
@@ -394,12 +485,12 @@ def add_termination_schedule(ctx, instance_id: Optional[str], duration_minutes: 
 @schedule.command("add-startup")
 @click.option("--type", "-t", required=True, help="Instance type")
 @click.option("--region", "-r", required=True, help="Region")
-@click.option("--name", "-n", help="Instance name")
+@click.option("--name", "-n", required=True, help="Instance name (required for idempotent scheduling)")
 @click.option("--filesystem", "-f", help="Filesystem to attach")
 @click.option("--cron", "-c", required=True, help="Cron schedule (e.g., '0 9 * * 1-5' for 9 AM weekdays)")
 @click.option("--description", "-d", help="Description for the scheduled job")
 @click.pass_context
-def add_startup_schedule(ctx, type: str, region: str, name: Optional[str], 
+def add_startup_schedule(ctx, type: str, region: str, name: str, 
                         filesystem: Optional[str], cron: str, description: Optional[str]):
     scheduler = ctx.obj['scheduler']
     
@@ -407,39 +498,58 @@ def add_startup_schedule(ctx, type: str, region: str, name: Optional[str],
         job = scheduler.add_recurring_schedule(
             action="create_instance",
             cron_schedule=cron,
-            description=description or f"Start {type} instance in {region}",
+            description=description or f"Ensure {name} ({type}) in {region}",
             instance_type=type,
             region=region,
             name=name,
             filesystem=filesystem
         )
         
-        console.print(f"[green]Scheduled recurring instance startup: {cron}[/green]")
+        console.print(f"[green]Scheduled idempotent instance startup: {cron}[/green]")
+        console.print(f"[cyan]Instance '{name}' will be created if it doesn't exist[/cyan]")
         
     except Exception as e:
         console.print(f"[red]Error scheduling startup: {e}[/red]")
 
 
 @schedule.command("add-recurring-termination")
-@click.option("--instance-id", "-i", help="Instance ID to terminate (leave empty for all instances)")
+@click.option("--instance-id", "-i", help="Instance ID to terminate")
+@click.option("--instance-name", "-n", help="Instance name to terminate")
+@click.option("--all", "terminate_all", is_flag=True, help="Terminate all instances")
 @click.option("--cron", "-c", required=True, help="Cron schedule (e.g., '0 18 * * 1-5' for 6 PM weekdays)")
 @click.option("--description", "-d", help="Description for the scheduled job")
 @click.pass_context
-def add_recurring_termination(ctx, instance_id: Optional[str], cron: str, description: Optional[str]):
+def add_recurring_termination(ctx, instance_id: Optional[str], instance_name: Optional[str], 
+                             terminate_all: bool, cron: str, description: Optional[str]):
     scheduler = ctx.obj['scheduler']
     
+    # Validate that exactly one option is provided
+    options_count = sum([bool(instance_id), bool(instance_name), bool(terminate_all)])
+    if options_count != 1:
+        console.print("[red]Must specify exactly one of: --instance-id, --instance-name, or --all[/red]")
+        return
+    
     try:
-        action = "terminate_instance" if instance_id else "terminate_all"
-        kwargs = {"instance_id": instance_id} if instance_id else {}
+        if terminate_all:
+            action = "terminate_all"
+            kwargs = {}
+            instance_desc = "all instances"
+        elif instance_id:
+            action = "terminate_instance"
+            kwargs = {"instance_id": instance_id}
+            instance_desc = f"instance {instance_id}"
+        else:  # instance_name
+            action = "terminate_instance_by_name"
+            kwargs = {"instance_name": instance_name}
+            instance_desc = f"instance '{instance_name}'"
         
         job = scheduler.add_recurring_schedule(
             action=action,
             cron_schedule=cron,
-            description=description or f"Recurring termination: {cron}",
+            description=description or f"Terminate {instance_desc}: {cron}",
             **kwargs
         )
         
-        instance_desc = f"instance {instance_id}" if instance_id else "all instances"
         console.print(f"[green]Scheduled recurring termination of {instance_desc}: {cron}[/green]")
         
     except Exception as e:

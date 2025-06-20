@@ -22,12 +22,16 @@ class LambdaLabsScheduler:
         
         if action == "terminate_instance":
             return f"{base_cmd} instances terminate {kwargs['instance_id']}"
+        elif action == "terminate_instance_by_name":
+            return f"{base_cmd} instances terminate-by-name {kwargs['instance_name']}"
         elif action == "terminate_all":
             return f"yes | {base_cmd} instances terminate-all"
         elif action == "create_instance":
-            cmd = f"{base_cmd} instances create --type {kwargs['instance_type']} --region {kwargs['region']}"
+            cmd = f"{base_cmd} instances ensure --type {kwargs['instance_type']} --region {kwargs['region']}"
             if kwargs.get('name'):
                 cmd += f" --name {kwargs['name']}"
+            else:
+                raise ValueError("Instance name is required for scheduled creation")
             if kwargs.get('filesystem'):
                 cmd += f" --filesystem {kwargs['filesystem']}"
             return cmd

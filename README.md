@@ -121,11 +121,14 @@ lambdalabs schedule add-termination --in 30
 # Terminate all instances at 6 PM
 lambdalabs schedule add-termination --at 18:00
 
-# Start an instance every weekday at 9 AM
-lambdalabs schedule add-startup --type gpu_1x_a10 --region us-south-1 --cron "0 9 * * 1-5"
+# Ensure an instance exists every weekday at 9 AM (idempotent)
+lambdalabs schedule add-startup --type gpu_1x_a10 --region us-south-1 --name my-workstation --cron "0 9 * * 1-5"
 
-# Terminate all instances every weekday at 6 PM
-lambdalabs schedule add-recurring-termination --cron "0 18 * * 1-5"
+# Terminate specific instance every weekday at 6 PM
+lambdalabs schedule add-recurring-termination --instance-name my-workstation --cron "0 18 * * 1-5"
+
+# Or terminate all instances every weekday at 6 PM
+lambdalabs schedule add-recurring-termination --all --cron "0 18 * * 1-5"
 
 # List all scheduled jobs
 lambdalabs schedule list
@@ -186,19 +189,27 @@ If no SSH keys are found in Lambda Labs, it will automatically upload your first
 Create a development workflow:
 
 ```bash
-# Start instance every weekday morning
+# Ensure dev instance exists every weekday morning (idempotent)
 lambdalabs schedule add-startup \
   --type gpu_1x_a10 \
   --region us-south-1 \
-  --name dev-instance \
+  --name dev-workstation \
+  --filesystem my-data \
   --cron "0 9 * * 1-5" \
-  --description "Daily dev instance"
+  --description "Daily dev workstation"
 
-# Shut down every evening
+# Shut down the specific instance every evening
 lambdalabs schedule add-recurring-termination \
+  --instance-name dev-workstation \
   --cron "0 18 * * 1-5" \
   --description "Evening shutdown"
 ```
+
+**Key Benefits:**
+- **Idempotent**: Running the startup schedule multiple times won't create duplicate instances
+- **Named instances**: Easy to identify and manage specific workstations
+- **Cost effective**: Instances only run when needed (9 AM - 6 PM weekdays)
+- **Persistent storage**: Filesystem automatically attached to maintain work between sessions
 
 ## Error Handling
 
