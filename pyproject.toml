@@ -37,3 +37,10 @@ Issues = "https://github.com/rmcwhorter/lambdalabs-cli/issues"
 
 [project.scripts]
 lambdalabs = "lambdalabs_cli.cli:cli"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.1",
+    "pytest-cov>=6.2.1",
+    "pytest-mock>=3.14.1",
+]
