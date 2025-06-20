@@ -168,7 +168,7 @@ def test_scheduler_command_generation():
         
         # Test terminate all command
         cmd = scheduler._create_job_command("terminate_all")
-        assert "yes |" in cmd
+        assert "--yes" in cmd
         assert "terminate-all" in cmd
 
 

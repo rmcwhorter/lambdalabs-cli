@@ -79,6 +79,8 @@ class LambdaLabsScheduler:
                 raise ValueError(f"Invalid instance type: {instance_type}")
             if not self._validate_region(region):
                 raise ValueError(f"Invalid region: {region}")
+            if not name:
+                raise ValueError("Instance name is required")
             if not self._validate_instance_name(name):
                 raise ValueError(f"Invalid instance name: {name}")
             
