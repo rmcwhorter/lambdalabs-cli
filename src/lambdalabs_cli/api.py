@@ -1,6 +1,10 @@
 import requests
+import time
 from typing import List, Dict, Any, Optional
 from .config import Config
+from .logging_config import get_logger
+
+logger = get_logger("api")
 
 
 class LambdaLabsAPI:
@@ -13,11 +17,55 @@ class LambdaLabsAPI:
             "Content-Type": "application/json"
         })
 
-    def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+    def _request(self, method: str, endpoint: str, retries: int = 3, **kwargs) -> Dict[str, Any]:
         url = f"{self.base_url}{endpoint}"
-        response = self.session.request(method, url, **kwargs)
-        response.raise_for_status()
-        return response.json()
+        logger.debug(f"Making {method} request to {url}")
+        
+        for attempt in range(retries):
+            try:
+                response = self.session.request(method, url, timeout=30, **kwargs)
+                logger.debug(f"Response status: {response.status_code}")
+                response.raise_for_status()
+                return response.json()
+                
+            except requests.exceptions.HTTPError as e:
+                # Don't retry on client errors (4xx)
+                if response.status_code < 500:
+                    logger.error(f"HTTP client error: {method} {url} - {e}")
+                    raise
+                # Retry on server errors (5xx)
+                if attempt < retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    logger.warning(f"HTTP server error (attempt {attempt + 1}/{retries}): {method} {url} - {e}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"HTTP server error after {retries} attempts: {method} {url} - {e}")
+                raise
+                
+            except requests.exceptions.ConnectionError as e:
+                if attempt < retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Connection error (attempt {attempt + 1}/{retries}): {method} {url} - {e}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"Connection error after {retries} attempts: {method} {url} - {e}")
+                raise
+                
+            except requests.exceptions.Timeout as e:
+                if attempt < retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"Request timeout (attempt {attempt + 1}/{retries}): {method} {url} - {e}. Retrying in {wait_time}s...")
+                    time.sleep(wait_time)
+                    continue
+                logger.error(f"Request timeout after {retries} attempts: {method} {url} - {e}")
+                raise
+                
+            except requests.exceptions.RequestException as e:
+                logger.error(f"API request failed: {method} {url} - {e}")
+                raise
+                
+        # This should never be reached
+        raise RuntimeError("Unexpected error in request retry logic")
 
     def list_instances(self) -> List[Dict[str, Any]]:
         return self._request("GET", "/instances")["data"]

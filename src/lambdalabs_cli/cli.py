@@ -1,4 +1,5 @@
 import click
+import re
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -6,9 +7,40 @@ from typing import Optional, List
 from .config import Config
 from .api import LambdaLabsAPI
 from .scheduler import LambdaLabsScheduler
+from .logging_config import get_logger
+
+logger = get_logger("cli")
 
 
 console = Console()
+
+
+def validate_instance_name(name: str) -> bool:
+    """Validate instance name for security and Lambda Labs compatibility."""
+    if not name or len(name) > 64:
+        return False
+    return bool(re.match(r'^[a-zA-Z0-9-_]+$', name))
+
+
+def validate_instance_type(instance_type: str) -> bool:
+    """Validate instance type format."""
+    if not instance_type or len(instance_type) > 32:
+        return False
+    return bool(re.match(r'^[a-zA-Z0-9_]+$', instance_type))
+
+
+def validate_region(region: str) -> bool:
+    """Validate region format."""
+    if not region or len(region) > 32:
+        return False
+    return bool(re.match(r'^[a-z]+-[a-z]+-[0-9]+$', region))
+
+
+def validate_filesystem_name(name: str) -> bool:
+    """Validate filesystem name."""
+    if not name or len(name) > 64:
+        return False
+    return bool(re.match(r'^[a-zA-Z0-9-_]+$', name))
 
 
 @click.group()
@@ -39,6 +71,7 @@ def instances():
 def list_instances(ctx):
     api = ctx.obj['api']
     try:
+        logger.info("User requested instance list")
         instances = api.list_instances()
         
         if not instances:
@@ -65,7 +98,11 @@ def list_instances(ctx):
         
         console.print(table)
         
+    except KeyError as e:
+        logger.error(f"Missing API response field: {e}")
+        console.print(f"[red]Invalid API response format: {e}[/red]")
     except Exception as e:
+        logger.error(f"Failed to list instances: {e}")
         console.print(f"[red]Error listing instances: {e}[/red]")
 
 
@@ -76,10 +113,28 @@ def list_instances(ctx):
 @click.option("--filesystem", "-f", help="Filesystem to attach")
 @click.pass_context
 def create_instance(ctx, type: str, region: str, name: Optional[str], filesystem: Optional[str]):
+    # Validate inputs
+    if not validate_instance_type(type):
+        console.print(f"[red]Invalid instance type: {type}[/red]")
+        return
+    
+    if not validate_region(region):
+        console.print(f"[red]Invalid region: {region}[/red]")
+        return
+    
+    if name and not validate_instance_name(name):
+        console.print(f"[red]Invalid instance name: {name}[/red]")
+        return
+    
+    if filesystem and not validate_filesystem_name(filesystem):
+        console.print(f"[red]Invalid filesystem name: {filesystem}[/red]")
+        return
+    
     api = ctx.obj['api']
     config = ctx.obj['config']
     
     try:
+        logger.info(f"Creating instance: type={type}, region={region}, name={name}")
         ssh_keys = api.list_ssh_keys()
         if not ssh_keys:
             console.print("[yellow]No SSH keys found. Setting up SSH key...[/yellow]")
@@ -113,7 +168,14 @@ def create_instance(ctx, type: str, region: str, name: Optional[str], filesystem
         
         console.print(f"[green]Instance launch initiated: {result.get('instance_ids', [])}[/green]")
         
+    except ValueError as e:
+        logger.error(f"Invalid input for instance creation: {e}")
+        console.print(f"[red]Invalid input: {e}[/red]")
+    except KeyError as e:
+        logger.error(f"Missing API response field: {e}")
+        console.print(f"[red]Invalid API response format: {e}[/red]")
     except Exception as e:
+        logger.error(f"Failed to create instance: {e}")
         console.print(f"[red]Error creating instance: {e}[/red]")
 
 
@@ -127,7 +189,11 @@ def terminate_instance(ctx, instance_id: str):
         result = api.terminate_instance(instance_id)
         console.print(f"[green]Instance {instance_id} termination initiated[/green]")
         
+    except KeyError as e:
+        logger.error(f"Missing API response field: {e}")
+        console.print(f"[red]Invalid API response format: {e}[/red]")
     except Exception as e:
+        logger.error(f"Failed to terminate instance: {e}")
         console.print(f"[red]Error terminating instance: {e}[/red]")
 
 
@@ -136,6 +202,11 @@ def terminate_instance(ctx, instance_id: str):
 @click.pass_context
 def terminate_instance_by_name(ctx, instance_name: str):
     """Terminate instance by name instead of ID."""
+    # Validate input
+    if not validate_instance_name(instance_name):
+        console.print(f"[red]Invalid instance name: {instance_name}[/red]")
+        return
+    
     api = ctx.obj['api']
     
     try:
@@ -162,10 +233,15 @@ def terminate_instance_by_name(ctx, instance_name: str):
 
 
 @instances.command("terminate-all")
-@click.confirmation_option(prompt="Are you sure you want to terminate ALL instances?")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompt")
 @click.pass_context
-def terminate_all_instances(ctx):
+def terminate_all_instances(ctx, yes: bool):
     api = ctx.obj['api']
+    
+    if not yes:
+        if not click.confirm("Are you sure you want to terminate ALL instances?"):
+            console.print("[yellow]Aborted[/yellow]")
+            return
     
     try:
         result = api.terminate_all_instances()
@@ -187,6 +263,23 @@ def terminate_all_instances(ctx):
 @click.pass_context
 def ensure_instance(ctx, type: str, region: str, name: str, filesystem: Optional[str]):
     """Create instance if it doesn't exist, otherwise do nothing."""
+    # Validate inputs
+    if not validate_instance_type(type):
+        console.print(f"[red]Invalid instance type: {type}[/red]")
+        return
+    
+    if not validate_region(region):
+        console.print(f"[red]Invalid region: {region}[/red]")
+        return
+    
+    if not validate_instance_name(name):
+        console.print(f"[red]Invalid instance name: {name}[/red]")
+        return
+    
+    if filesystem and not validate_filesystem_name(filesystem):
+        console.print(f"[red]Invalid filesystem name: {filesystem}[/red]")
+        return
+    
     api = ctx.obj['api']
     config = ctx.obj['config']
     
@@ -439,7 +532,7 @@ def list_scheduled_jobs(ctx):
             status = "Enabled" if job["enabled"] else "Disabled"
             description = job["comment"].replace("lambdalabs-cli: ", "")
             table.add_row(
-                job["id"][:8],  # Show first 8 chars of ID
+                job["id"],  # Job ID is already 8 characters from scheduler
                 job["schedule"],
                 job["command"].split()[-2:][0] if len(job["command"].split()) > 1 else "unknown",
                 status,
